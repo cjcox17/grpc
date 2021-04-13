@@ -45,6 +45,7 @@ class _ServerStoppedError(BaseError):
 cdef class RPCState:
 
     def __cinit__(self, AioServer server):
+        init_grpc_aio()
         self.call = NULL
         self.server = server
         grpc_metadata_array_init(&self.request_metadata)
@@ -106,6 +107,7 @@ cdef class RPCState:
         grpc_metadata_array_destroy(&self.request_metadata)
         if self.call:
             grpc_call_unref(self.call)
+        shutdown_grpc_aio()
 
 
 cdef class _ServicerContext:
@@ -143,7 +145,7 @@ cdef class _ServicerContext:
                             self._loop)
         self._rpc_state.metadata_sent = True
 
-    async def send_initial_metadata(self, tuple metadata):
+    async def send_initial_metadata(self, object metadata):
         self._rpc_state.raise_for_termination()
 
         if self._rpc_state.metadata_sent:
@@ -151,7 +153,7 @@ cdef class _ServicerContext:
         else:
             await _send_initial_metadata(
                 self._rpc_state,
-                _augment_metadata(metadata, self._rpc_state.compression_algorithm),
+                _augment_metadata(tuple(metadata), self._rpc_state.compression_algorithm),
                 _EMPTY_FLAG,
                 self._loop
             )
@@ -192,8 +194,8 @@ cdef class _ServicerContext:
     async def abort_with_status(self, object status):
         await self.abort(status.code, status.details, status.trailing_metadata)
 
-    def set_trailing_metadata(self, tuple metadata):
-        self._rpc_state.trailing_metadata = metadata
+    def set_trailing_metadata(self, object metadata):
+        self._rpc_state.trailing_metadata = tuple(metadata)
 
     def invocation_metadata(self):
         return self._rpc_state.invocation_metadata()
@@ -212,6 +214,49 @@ cdef class _ServicerContext:
 
     def disable_next_message_compression(self):
         self._rpc_state.disable_next_compression = True
+
+    def peer(self):
+        cdef char *c_peer = NULL
+        c_peer = grpc_call_get_peer(self._rpc_state.call)
+        peer = (<bytes>c_peer).decode('utf8')
+        gpr_free(c_peer)
+        return peer
+
+    def peer_identities(self):
+        cdef Call query_call = Call()
+        query_call.c_call = self._rpc_state.call
+        identities = peer_identities(query_call)
+        query_call.c_call = NULL
+        return identities
+
+    def peer_identity_key(self):
+        cdef Call query_call = Call()
+        query_call.c_call = self._rpc_state.call
+        identity_key = peer_identity_key(query_call)
+        query_call.c_call = NULL
+        if identity_key:
+            return identity_key.decode('utf8')
+        else:
+            return None
+
+    def auth_context(self):
+        cdef Call query_call = Call()
+        query_call.c_call = self._rpc_state.call
+        bytes_ctx = auth_context(query_call)
+        query_call.c_call = NULL
+        if bytes_ctx:
+            ctx = {}
+            for key in bytes_ctx:
+                ctx[key.decode('utf8')] = bytes_ctx[key]
+            return ctx
+        else:
+            return {}
+
+    def time_remaining(self):
+        if self._rpc_state.details.deadline.seconds == _GPR_INF_FUTURE.seconds:
+            return None
+        else:
+            return max(_time_from_timespec(self._rpc_state.details.deadline) - time.time(), 0)
 
 
 cdef class _SyncServicerContext:
@@ -233,13 +278,13 @@ cdef class _SyncServicerContext:
         # Abort should raise an AbortError
         future.exception()
 
-    def send_initial_metadata(self, tuple metadata):
+    def send_initial_metadata(self, object metadata):
         future = asyncio.run_coroutine_threadsafe(
             self._context.send_initial_metadata(metadata),
             self._loop)
         future.result()
 
-    def set_trailing_metadata(self, tuple metadata):
+    def set_trailing_metadata(self, object metadata):
         self._context.set_trailing_metadata(metadata)
 
     def invocation_metadata(self):
@@ -259,6 +304,21 @@ cdef class _SyncServicerContext:
 
     def add_callback(self, object callback):
         self._callbacks.append(callback)
+
+    def peer(self):
+        return self._context.peer()
+
+    def peer_identities(self):
+        return self._context.peer_identities()
+
+    def peer_identity_key(self):
+        return self._context.peer_identity_key()
+
+    def auth_context(self):
+        return self._context.auth_context()
+
+    def time_remaining(self):
+        return self._context.time_remaining()
 
 
 async def _run_interceptor(object interceptors, object query_handler,
@@ -303,7 +363,7 @@ async def _finish_handler_with_unary_response(RPCState rpc_state,
                                               object response_serializer,
                                               object loop):
     """Finishes server method handler with a single response.
-    
+
     This function executes the application handler, and handles response
     sending, as well as errors. It is shared between unary-unary and
     stream-unary handlers.
@@ -378,7 +438,7 @@ async def _finish_handler_with_stream_responses(RPCState rpc_state,
     """
     cdef object async_response_generator
     cdef object response_message
-    
+
     if inspect.iscoroutinefunction(stream_handler):
         # Case 1: Coroutine async handler - using reader-writer API
         # The handler uses reader / writer API, returns None.
@@ -730,6 +790,40 @@ cdef CallbackFailureHandler SERVER_SHUTDOWN_FAILURE_HANDLER = CallbackFailureHan
     InternalError)
 
 
+cdef class _ConcurrentRpcLimiter:
+
+    def __cinit__(self, int maximum_concurrent_rpcs, object loop):
+        if maximum_concurrent_rpcs <= 0:
+            raise ValueError("maximum_concurrent_rpcs should be a postive integer")
+        self._maximum_concurrent_rpcs = maximum_concurrent_rpcs
+        self._active_rpcs = 0
+        self._active_rpcs_condition = asyncio.Condition()
+        self._loop = loop
+
+    async def check_before_request_call(self):
+        await self._active_rpcs_condition.acquire()
+        try:
+            predicate = lambda: self._active_rpcs < self._maximum_concurrent_rpcs
+            await self._active_rpcs_condition.wait_for(predicate)
+            self._active_rpcs += 1
+        finally:
+            self._active_rpcs_condition.release()
+
+    async def _decrease_active_rpcs_count_with_lock(self):
+        await self._active_rpcs_condition.acquire()
+        try:
+            self._active_rpcs -= 1
+            self._active_rpcs_condition.notify()
+        finally:
+            self._active_rpcs_condition.release()
+
+    def _decrease_active_rpcs_count(self, unused_future):
+        self._loop.create_task(self._decrease_active_rpcs_count_with_lock())
+
+    def decrease_once_finished(self, object rpc_task):
+        rpc_task.add_done_callback(self._decrease_active_rpcs_count)
+
+
 cdef class AioServer:
 
     def __init__(self, loop, thread_pool, generic_handlers, interceptors,
@@ -737,7 +831,8 @@ cdef class AioServer:
         init_grpc_aio()
         # NOTE(lidiz) Core objects won't be deallocated automatically.
         # If AioServer.shutdown is not called, those objects will leak.
-        self._server = Server(options)
+        # TODO(rbellevi): Support xDS in aio server.
+        self._server = Server(options, False)
         grpc_server_register_completion_queue(
             self._server.c_server,
             global_completion_queue(),
@@ -764,9 +859,9 @@ cdef class AioServer:
             self._interceptors = ()
 
         self._thread_pool = thread_pool
-
-        if maximum_concurrent_rpcs:
-            raise NotImplementedError()
+        if maximum_concurrent_rpcs is not None:
+            self._limiter = _ConcurrentRpcLimiter(maximum_concurrent_rpcs,
+                                                  loop)
 
     def add_generic_rpc_handlers(self, object generic_rpc_handlers):
         self._generic_handlers.extend(generic_rpc_handlers)
@@ -809,6 +904,9 @@ cdef class AioServer:
             if self._status != AIO_SERVER_STATUS_RUNNING:
                 break
 
+            if self._limiter is not None:
+                await self._limiter.check_before_request_call()
+
             # Accepts new request from Core
             rpc_state = await self._request_call()
 
@@ -823,7 +921,7 @@ cdef class AioServer:
                                    self._loop)
 
             # Fires off a task that listens on the cancellation from client.
-            self._loop.create_task(
+            rpc_task = self._loop.create_task(
                 _schedule_rpc_coro(
                     rpc_coro,
                     rpc_state,
@@ -831,8 +929,13 @@ cdef class AioServer:
                 )
             )
 
+            if self._limiter is not None:
+                self._limiter.decrease_once_finished(rpc_task)
+
     def _serving_task_crash_handler(self, object task):
         """Shutdown the server immediately if unexpectedly exited."""
+        if task.cancelled():
+            return
         if task.exception() is None:
             return
         if self._status != AIO_SERVER_STATUS_STOPPING:
@@ -941,7 +1044,7 @@ cdef class AioServer:
         # TODO(lidiz) if users create server, and then dealloc it immediately.
         # There is a potential memory leak of created Core server.
         if self._status != AIO_SERVER_STATUS_STOPPED:
-            _LOGGER.warning(
+            _LOGGER.debug(
                 '__dealloc__ called on running server %s with status %d',
                 self,
                 self._status
@@ -951,3 +1054,6 @@ cdef class AioServer:
     cdef thread_pool(self):
         """Access the thread pool instance."""
         return self._thread_pool
+
+    def is_running(self):
+        return self._status == AIO_SERVER_STATUS_RUNNING

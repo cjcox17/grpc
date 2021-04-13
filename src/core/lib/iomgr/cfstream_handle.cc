@@ -156,6 +156,7 @@ CFStreamHandle::~CFStreamHandle() {
   open_event_.DestroyEvent();
   read_event_.DestroyEvent();
   write_event_.DestroyEvent();
+  dispatch_release(dispatch_queue_);
 }
 
 void CFStreamHandle::NotifyOnOpen(grpc_closure* closure) {
@@ -201,9 +202,9 @@ void CFStreamHandle::Unref(const char* file, int line, const char* reason) {
 
 #else
 
-/* Creating a dummy function so that the grpc_cfstream library will be
+/* Creating a phony function so that the grpc_cfstream library will be
  * non-empty.
  */
-void CFStreamDummy() {}
+void CFStreamPhony() {}
 
 #endif

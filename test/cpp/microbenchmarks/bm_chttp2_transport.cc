@@ -33,6 +33,7 @@
 #include "src/core/lib/iomgr/resource_quota.h"
 #include "src/core/lib/slice/slice_internal.h"
 #include "src/core/lib/transport/static_metadata.h"
+#include "test/core/util/test_config.h"
 #include "test/cpp/microbenchmarks/helpers.h"
 #include "test/cpp/util/test_config.h"
 
@@ -40,9 +41,9 @@
 // Helper classes
 //
 
-class DummyEndpoint : public grpc_endpoint {
+class PhonyEndpoint : public grpc_endpoint {
  public:
-  DummyEndpoint() {
+  PhonyEndpoint() {
     static const grpc_endpoint_vtable my_vtable = {read,
                                                    write,
                                                    add_to_pollset,
@@ -52,11 +53,12 @@ class DummyEndpoint : public grpc_endpoint {
                                                    destroy,
                                                    get_resource_user,
                                                    get_peer,
+                                                   get_local_address,
                                                    get_fd,
                                                    can_track_err};
     grpc_endpoint::vtable = &my_vtable;
     ru_ = grpc_resource_user_create(LibraryInitializer::get().rq(),
-                                    "dummy_endpoint");
+                                    "phony_endpoint");
   }
 
   void PushInput(grpc_slice slice) {
@@ -92,7 +94,7 @@ class DummyEndpoint : public grpc_endpoint {
 
   static void read(grpc_endpoint* ep, grpc_slice_buffer* slices,
                    grpc_closure* cb, bool /*urgent*/) {
-    static_cast<DummyEndpoint*>(ep)->QueueRead(slices, cb);
+    static_cast<PhonyEndpoint*>(ep)->QueueRead(slices, cb);
   }
 
   static void write(grpc_endpoint* /*ep*/, grpc_slice_buffer* /*slices*/,
@@ -110,20 +112,23 @@ class DummyEndpoint : public grpc_endpoint {
                                       grpc_pollset_set* /*pollset*/) {}
 
   static void shutdown(grpc_endpoint* ep, grpc_error* why) {
-    grpc_resource_user_shutdown(static_cast<DummyEndpoint*>(ep)->ru_);
+    grpc_resource_user_shutdown(static_cast<PhonyEndpoint*>(ep)->ru_);
     grpc_core::ExecCtx::Run(DEBUG_LOCATION,
-                            static_cast<DummyEndpoint*>(ep)->read_cb_, why);
+                            static_cast<PhonyEndpoint*>(ep)->read_cb_, why);
   }
 
   static void destroy(grpc_endpoint* ep) {
-    grpc_resource_user_unref(static_cast<DummyEndpoint*>(ep)->ru_);
-    delete static_cast<DummyEndpoint*>(ep);
+    grpc_resource_user_unref(static_cast<PhonyEndpoint*>(ep)->ru_);
+    delete static_cast<PhonyEndpoint*>(ep);
   }
 
   static grpc_resource_user* get_resource_user(grpc_endpoint* ep) {
-    return static_cast<DummyEndpoint*>(ep)->ru_;
+    return static_cast<PhonyEndpoint*>(ep)->ru_;
   }
-  static char* get_peer(grpc_endpoint* /*ep*/) { return gpr_strdup("test"); }
+  static absl::string_view get_peer(grpc_endpoint* /*ep*/) { return "test"; }
+  static absl::string_view get_local_address(grpc_endpoint* /*ep*/) {
+    return "test";
+  }
   static int get_fd(grpc_endpoint* /*ep*/) { return 0; }
   static bool can_track_err(grpc_endpoint* /*ep*/) { return false; }
 };
@@ -132,9 +137,9 @@ class Fixture {
  public:
   Fixture(const grpc::ChannelArguments& args, bool client) {
     grpc_channel_args c_args = args.c_channel_args();
-    ep_ = new DummyEndpoint;
+    ep_ = new PhonyEndpoint;
     t_ = grpc_create_chttp2_transport(&c_args, ep_, client);
-    grpc_chttp2_transport_start_reading(t_, nullptr, nullptr);
+    grpc_chttp2_transport_start_reading(t_, nullptr, nullptr, nullptr);
     FlushExecCtx();
   }
 
@@ -150,7 +155,7 @@ class Fixture {
   void PushInput(grpc_slice slice) { ep_->PushInput(slice); }
 
  private:
-  DummyEndpoint* ep_;
+  PhonyEndpoint* ep_;
   grpc_transport* t_;
 };
 
@@ -176,7 +181,7 @@ std::unique_ptr<TestClosure> MakeTestClosure(F f) {
 template <class F>
 grpc_closure* MakeOnceClosure(F f) {
   struct C : public grpc_closure {
-    C(const F& f) : f_(f) {}
+    explicit C(const F& f) : f_(f) {}
     F f_;
     static void Execute(void* arg, grpc_error* error) {
       static_cast<C*>(arg)->f_(error);
@@ -189,7 +194,7 @@ grpc_closure* MakeOnceClosure(F f) {
 
 class Stream {
  public:
-  Stream(Fixture* f) : f_(f) {
+  explicit Stream(Fixture* f) : f_(f) {
     stream_size_ = grpc_transport_stream_size(f->transport());
     stream_ = gpr_malloc(stream_size_);
     arena_ = grpc_core::Arena::Create(4096);
@@ -239,7 +244,7 @@ class Stream {
     grpc_transport_destroy_stream(stream->f_->transport(),
                                   static_cast<grpc_stream*>(stream->stream_),
                                   stream->destroy_closure_);
-    gpr_event_set(&stream->done_, (void*)(1));
+    gpr_event_set(&stream->done_, reinterpret_cast<void*>(1));
   }
 
   Fixture* f_;
@@ -391,7 +396,7 @@ static void BM_TransportEmptyOp(benchmark::State& state) {
   std::unique_ptr<TestClosure> stream_cancel_closure =
       MakeTestClosure([&](grpc_error* error) {
         GPR_ASSERT(error == GRPC_ERROR_NONE);
-        gpr_event_set(stream_cancel_done, (void*)(1));
+        gpr_event_set(stream_cancel_done, reinterpret_cast<void*>(1));
       });
   op.on_complete = stream_cancel_closure.get();
   s->Op(&op);
@@ -439,7 +444,7 @@ static void BM_TransportStreamSend(benchmark::State& state) {
 
   std::unique_ptr<TestClosure> c = MakeTestClosure([&](grpc_error* /*error*/) {
     if (!state.KeepRunning()) {
-      gpr_event_set(bm_done, (void*)(1));
+      gpr_event_set(bm_done, reinterpret_cast<void*>(1));
       return;
     }
     grpc_slice_buffer send_buffer;
@@ -475,7 +480,7 @@ static void BM_TransportStreamSend(benchmark::State& state) {
   std::unique_ptr<TestClosure> stream_cancel_closure =
       MakeTestClosure([&](grpc_error* error) {
         GPR_ASSERT(error == GRPC_ERROR_NONE);
-        gpr_event_set(stream_cancel_done, (void*)(1));
+        gpr_event_set(stream_cancel_done, reinterpret_cast<void*>(1));
       });
   op.on_complete = stream_cancel_closure.get();
   s->Op(&op);
@@ -661,7 +666,7 @@ static void BM_TransportStreamRecv(benchmark::State& state) {
   std::unique_ptr<TestClosure> stream_cancel_closure =
       MakeTestClosure([&](grpc_error* error) {
         GPR_ASSERT(error == GRPC_ERROR_NONE);
-        gpr_event_set(stream_cancel_done, (void*)(1));
+        gpr_event_set(stream_cancel_done, reinterpret_cast<void*>(1));
       });
   op.on_complete = stream_cancel_closure.get();
   s->Op(&op);
@@ -684,6 +689,7 @@ void RunTheBenchmarksNamespaced() { RunSpecifiedBenchmarks(); }
 }  // namespace benchmark
 
 int main(int argc, char** argv) {
+  grpc::testing::TestEnvironment env(argc, argv);
   LibraryInitializer libInit;
   ::benchmark::Initialize(&argc, argv);
   ::grpc::testing::InitTest(&argc, &argv, false);

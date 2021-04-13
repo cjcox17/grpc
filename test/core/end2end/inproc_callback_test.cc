@@ -32,7 +32,7 @@
 #include "test/core/util/test_config.h"
 
 typedef struct inproc_fixture_data {
-  bool dummy;  // reserved for future expansion. Struct can't be empty
+  bool phony;  // reserved for future expansion. Struct can't be empty
 } inproc_fixture_data;
 
 namespace {
@@ -422,7 +422,7 @@ static void simple_request_body(grpc_end2end_test_config config,
   GPR_ASSERT(nullptr != strstr(error_string, "grpc_status"));
   GPR_ASSERT(0 == grpc_slice_str_cmp(call_details.method, "/foo"));
   GPR_ASSERT(0 == call_details.flags);
-  GPR_ASSERT(was_cancelled == 1);
+  GPR_ASSERT(was_cancelled == 0);
 
   grpc_slice_unref(details);
   gpr_free(static_cast<void*>(const_cast<char*>(error_string)));

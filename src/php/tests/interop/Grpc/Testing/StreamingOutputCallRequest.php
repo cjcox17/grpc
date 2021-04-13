@@ -129,11 +129,21 @@ class StreamingOutputCallRequest extends \Google\Protobuf\Internal\Message
      * Optional input payload sent along with the request.
      *
      * Generated from protobuf field <code>.grpc.testing.Payload payload = 3;</code>
-     * @return \Grpc\Testing\Payload
+     * @return \Grpc\Testing\Payload|null
      */
     public function getPayload()
     {
-        return $this->payload;
+        return isset($this->payload) ? $this->payload : null;
+    }
+
+    public function hasPayload()
+    {
+        return isset($this->payload);
+    }
+
+    public function clearPayload()
+    {
+        unset($this->payload);
     }
 
     /**
@@ -155,11 +165,21 @@ class StreamingOutputCallRequest extends \Google\Protobuf\Internal\Message
      * Whether server should return a given status
      *
      * Generated from protobuf field <code>.grpc.testing.EchoStatus response_status = 7;</code>
-     * @return \Grpc\Testing\EchoStatus
+     * @return \Grpc\Testing\EchoStatus|null
      */
     public function getResponseStatus()
     {
-        return $this->response_status;
+        return isset($this->response_status) ? $this->response_status : null;
+    }
+
+    public function hasResponseStatus()
+    {
+        return isset($this->response_status);
+    }
+
+    public function clearResponseStatus()
+    {
+        unset($this->response_status);
     }
 
     /**

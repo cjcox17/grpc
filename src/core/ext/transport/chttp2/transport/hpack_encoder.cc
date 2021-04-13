@@ -104,7 +104,7 @@ struct SliceRefComparator {
 
 struct MetadataComparator {
   typedef grpc_mdelem Type;
-  static const grpc_mdelem Null() { return {0}; }
+  static grpc_mdelem Null() { return {0}; }
   static bool IsNull(const grpc_mdelem md) { return md.payload == 0; }
   static bool Equals(const grpc_mdelem md1, const grpc_mdelem md2) {
     return md1.payload == md2.payload;
@@ -259,7 +259,7 @@ static bool CanAddToHashtable(grpc_chttp2_hpack_compressor* hpack_compressor,
 }
 } /* namespace */
 
-typedef struct {
+struct framer_state {
   int is_first_frame;
   /* number of bytes in 'output' when we started the frame - used to calculate
      frame length */
@@ -278,8 +278,7 @@ typedef struct {
   size_t max_frame_size;
   bool use_true_binary_metadata;
   bool is_end_of_stream;
-} framer_state;
-
+};
 /* fills p (which is expected to be kDataFrameHeaderSize bytes long)
  * with a data frame header */
 static void fill_header(uint8_t* p, uint8_t type, uint32_t id, size_t len,

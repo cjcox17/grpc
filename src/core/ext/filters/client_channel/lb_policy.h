@@ -24,12 +24,12 @@
 #include <functional>
 #include <iterator>
 
+#include "absl/status/status.h"
 #include "absl/strings/string_view.h"
 
 #include "src/core/ext/filters/client_channel/server_address.h"
 #include "src/core/ext/filters/client_channel/service_config.h"
 #include "src/core/ext/filters/client_channel/subchannel_interface.h"
-#include "src/core/lib/gprpp/map.h"
 #include "src/core/lib/gprpp/orphanable.h"
 #include "src/core/lib/gprpp/ref_counted_ptr.h"
 #include "src/core/lib/iomgr/polling_entity.h"
@@ -94,11 +94,11 @@ class LoadBalancingPolicy : public InternallyRefCounted<LoadBalancingPolicy> {
     /// Application-specific requests cost metrics.  Metric names are
     /// determined by the application.  Each value is an absolute cost
     /// (e.g. 3487 bytes of storage) associated with the request.
-    std::map<absl::string_view, double, StringLess> request_cost;
+    std::map<absl::string_view, double> request_cost;
     /// Application-specific resource utilization metrics.  Metric names
     /// are determined by the application.  Each value is expressed as a
     /// fraction of total resources available.
-    std::map<absl::string_view, double, StringLess> utilization;
+    std::map<absl::string_view, double> utilization;
   };
 
   /// Interface for accessing per-call state.
@@ -190,6 +190,8 @@ class LoadBalancingPolicy : public InternallyRefCounted<LoadBalancingPolicy> {
 
   /// Arguments used when picking a subchannel for a call.
   struct PickArgs {
+    /// The path of the call.  Indicates the RPC service and method name.
+    absl::string_view path;
     /// Initial metadata associated with the picking call.
     /// The LB policy may use the existing metadata to influence its routing
     /// decision, and it may add new metadata elements to be sent with the
@@ -276,11 +278,12 @@ class LoadBalancingPolicy : public InternallyRefCounted<LoadBalancingPolicy> {
 
     /// Creates a new subchannel with the specified channel args.
     virtual RefCountedPtr<SubchannelInterface> CreateSubchannel(
-        const grpc_channel_args& args) = 0;
+        ServerAddress address, const grpc_channel_args& args) = 0;
 
     /// Sets the connectivity state and returns a new picker to be used
     /// by the client channel.
     virtual void UpdateState(grpc_connectivity_state state,
+                             const absl::Status& status,
                              std::unique_ptr<SubchannelPicker>) = 0;
 
     /// Requests that the resolver re-resolve.
@@ -297,7 +300,7 @@ class LoadBalancingPolicy : public InternallyRefCounted<LoadBalancingPolicy> {
   /// return the parameters they need.
   class Config : public RefCounted<Config> {
    public:
-    virtual ~Config() = default;
+    ~Config() override = default;
 
     // Returns the load balancing policy name
     virtual const char* name() const = 0;
@@ -337,7 +340,7 @@ class LoadBalancingPolicy : public InternallyRefCounted<LoadBalancingPolicy> {
   };
 
   explicit LoadBalancingPolicy(Args args, intptr_t initial_refcount = 1);
-  virtual ~LoadBalancingPolicy();
+  ~LoadBalancingPolicy() override;
 
   // Not copyable nor movable.
   LoadBalancingPolicy(const LoadBalancingPolicy&) = delete;
@@ -372,7 +375,7 @@ class LoadBalancingPolicy : public InternallyRefCounted<LoadBalancingPolicy> {
     explicit QueuePicker(RefCountedPtr<LoadBalancingPolicy> parent)
         : parent_(std::move(parent)) {}
 
-    ~QueuePicker() { parent_.reset(DEBUG_LOCATION, "QueuePicker"); }
+    ~QueuePicker() override { parent_.reset(DEBUG_LOCATION, "QueuePicker"); }
 
     PickResult Pick(PickArgs args) override;
 

@@ -123,8 +123,9 @@ static grpc_filtered_mdelem remove_consumed_md(void* user_data,
   for (i = 0; i < calld->num_consumed_md; i++) {
     const grpc_metadata* consumed_md = &calld->consumed_md[i];
     if (grpc_slice_eq(GRPC_MDKEY(md), consumed_md->key) &&
-        grpc_slice_eq(GRPC_MDVALUE(md), consumed_md->value))
+        grpc_slice_eq(GRPC_MDVALUE(md), consumed_md->value)) {
       return GRPC_FILTERED_REMOVE();
+    }
   }
   return GRPC_FILTERED_MDELEM(md);
 }
@@ -205,6 +206,7 @@ static void cancel_call(void* arg, grpc_error* error) {
     on_md_processing_done_inner(elem, nullptr, 0, nullptr, 0,
                                 GRPC_ERROR_REF(error));
   }
+  GRPC_CALL_STACK_UNREF(calld->owning_call, "cancel_call");
 }
 
 static void recv_initial_metadata_ready(void* arg, grpc_error* error) {
@@ -217,6 +219,9 @@ static void recv_initial_metadata_ready(void* arg, grpc_error* error) {
         chand->creds->auth_metadata_processor().process != nullptr) {
       // We're calling out to the application, so we need to make sure
       // to drop the call combiner early if we get cancelled.
+      // TODO(yashykt): We would not need this ref if call combiners used
+      // Closure::Run() instead of ExecCtx::Run()
+      GRPC_CALL_STACK_REF(calld->owning_call, "cancel_call");
       GRPC_CLOSURE_INIT(&calld->cancel_closure, cancel_call, elem,
                         grpc_schedule_on_exec_ctx);
       calld->call_combiner->SetNotifyOnCancel(&calld->cancel_closure);
@@ -299,6 +304,13 @@ static grpc_error* server_auth_init_channel_elem(
   GPR_ASSERT(!args->is_last);
   grpc_auth_context* auth_context =
       grpc_find_auth_context_in_args(args->channel_args);
+  if (auth_context == nullptr) {
+    grpc_error* error = GRPC_ERROR_CREATE_FROM_STATIC_STRING(
+        "No authorization context found. This might be a TRANSIENT failure due "
+        "to certificates not having been loaded yet.");
+    gpr_log(GPR_DEBUG, "%s", grpc_error_string(error));
+    return error;
+  }
   GPR_ASSERT(auth_context != nullptr);
   grpc_server_credentials* creds =
       grpc_find_server_credentials_in_args(args->channel_args);

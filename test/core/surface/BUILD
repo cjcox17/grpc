@@ -78,6 +78,9 @@ grpc_cc_test(
 grpc_cc_test(
     name = "init_test",
     srcs = ["init_test.cc"],
+    external_deps = [
+        "gtest",
+    ],
     language = "C++",
     uses_polling = False,
     deps = [
@@ -155,6 +158,9 @@ grpc_cc_test(
 grpc_cc_test(
     name = "server_chttp2_test",
     srcs = ["server_chttp2_test.cc"],
+    external_deps = [
+        "gtest",
+    ],
     language = "C++",
     deps = [
         "//:gpr",

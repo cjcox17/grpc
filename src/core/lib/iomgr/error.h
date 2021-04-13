@@ -74,6 +74,8 @@ typedef enum {
   GRPC_ERROR_INT_OCCURRED_DURING_WRITE,
   /// channel connectivity state associated with the error
   GRPC_ERROR_INT_CHANNEL_CONNECTIVITY_STATE,
+  /// LB policy drop
+  GRPC_ERROR_INT_LB_POLICY_DROP,
 
   /// Must always be last
   GRPC_ERROR_INT_MAX,
@@ -157,6 +159,10 @@ grpc_error* grpc_error_create(const char* file, int line,
 #define GRPC_ERROR_CREATE_FROM_COPIED_STRING(desc)                           \
   grpc_error_create(__FILE__, __LINE__, grpc_slice_from_copied_string(desc), \
                     NULL, 0)
+#define GRPC_ERROR_CREATE_FROM_STRING_VIEW(desc) \
+  grpc_error_create(                             \
+      __FILE__, __LINE__,                        \
+      grpc_slice_from_copied_buffer((desc).data(), (desc).size()), NULL, 0)
 
 // Create an error that references some other errors. This function adds a
 // reference to each error in errs - it does not consume an existing reference
@@ -219,7 +225,7 @@ static grpc_error* grpc_error_create_from_vector(const char* file, int line,
 
 grpc_error* grpc_error_set_int(grpc_error* src, grpc_error_ints which,
                                intptr_t value) GRPC_MUST_USE_RESULT;
-/// It is an error to pass nullptr as `p`. Caller should allocate a dummy
+/// It is an error to pass nullptr as `p`. Caller should allocate a phony
 /// intptr_t for `p`, even if the value of `p` is not used.
 bool grpc_error_get_int(grpc_error* error, grpc_error_ints which, intptr_t* p);
 /// This call takes ownership of the slice; the error is responsible for

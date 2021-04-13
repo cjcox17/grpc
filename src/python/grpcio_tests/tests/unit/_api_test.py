@@ -84,6 +84,12 @@ class AllTest(unittest.TestCase):
             'secure_channel',
             'intercept_channel',
             'server',
+            'protos',
+            'services',
+            'protos_and_services',
+            'xds_channel_credentials',
+            'xds_server_credentials',
+            'insecure_server_credentials',
         )
 
         six.assertCountEqual(self, expected_grpc_code_elements,
